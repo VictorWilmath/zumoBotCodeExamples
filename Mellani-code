@@ -1,0 +1,361 @@
+// -------------------- Forward declarations --------------------
+int checkRing(uint16_t raw[]);
+void autoCalibrateRing();
+bool collisionDetected();
+void startEvade(int ringStatus);
+void startAttackCycle();
+void runAttackCycle();
+void runEvadeCycle();
+
+// -------------------- Constants --------------------
+const uint8_t SEARCH_THRESHOLD = 3;
+const uint8_t COMMIT_THRESHOLD = 4;
+
+const int pushSpeed = 380;
+const int trackSpeed = 220;
+const int pivotSpeed = 180;
+const int backSpeed = -220;
+
+const unsigned long arcTime = 900;
+const unsigned long pivotTime = 220;
+const unsigned long pivotInterval = 3000;
+
+const float collisionThreshold = 20000;
+
+const int DROP_DELTA = 220;
+const int HYST = 40;
+
+const uint8_t RING_CONFIRM_LIMIT = 2;
+
+// Evade timing
+const unsigned long EVADE_BACK_MS = 180;
+const unsigned long EVADE_TURN_MS = 280;
+const unsigned long EVADE_FORWARD_MS = 260;
+
+// Attack cycle timing
+const unsigned long ATTACK_PUSH_MS = 260;
+const unsigned long ATTACK_BACK_MS = 120;
+const unsigned long ATTACK_ANGLE_MS = 140;
+
+// -------------------- Globals --------------------
+uint8_t left = 0, front = 0, right = 0;
+uint16_t rawSensorValues[3];
+uint16_t ringThresholds[3];
+
+int scanDirection = 1;
+unsigned long scanTimer = 0;
+unsigned long pivotTimer = 0;
+
+uint8_t ringConfirmCount = 0;
+
+// alternate attack angle each time
+int ramAngleDir = 1;
+
+// -------------------- States --------------------
+enum State { idle, search, attack, evadeRing };
+State currentState = idle;
+
+enum EvadeState { EVADE_INIT, EVADE_BACK, EVADE_TURN, EVADE_FORWARD };
+EvadeState currentEvadeState = EVADE_INIT;
+
+enum AttackState { ATTACK_INIT, ATTACK_PUSH, ATTACK_BACK, ATTACK_TURN };
+AttackState currentAttackState = ATTACK_INIT;
+
+unsigned long stateTimer = 0;
+int evadeDirection = 0;   // -1 left, 0 center, 1 right
+
+// -------------------- Sensor helpers --------------------
+int checkRing(uint16_t raw[]) {
+  if (ringThresholds[0] == 0 && ringThresholds[1] == 0 && ringThresholds[2] == 0) {
+    return 99;
+  }
+
+  if ((int)ringThresholds[0] - (int)raw[0] > DROP_DELTA + HYST) return -1;
+  if ((int)ringThresholds[2] - (int)raw[2] > DROP_DELTA + HYST) return 1;
+  if ((int)ringThresholds[1] - (int)raw[1] > DROP_DELTA + HYST) return 0;
+
+  return 99;
+}
+
+bool collisionDetected() {
+  imu.read();
+  return abs(imu.a.x) > collisionThreshold;
+}
+
+void autoCalibrateRing() {
+  const uint8_t samples = 25;
+  uint32_t sum[3] = {0, 0, 0};
+  uint16_t temp[3];
+
+  for (uint8_t s = 0; s < samples; s++) {
+    lineSensors.read(temp);
+    for (int i = 0; i < 3; i++) {
+      sum[i] += temp[i];
+    }
+    delay(15);
+  }
+
+  for (int i = 0; i < 3; i++) {
+    ringThresholds[i] = sum[i] / samples;
+  }
+}
+
+void readAllSensors() {
+  prox.read();
+  lineSensors.read(rawSensorValues);
+
+  left  = prox.countsLeftWithLeftLeds() + prox.countsLeftWithRightLeds();
+  front = prox.countsFrontWithLeftLeds() + prox.countsFrontWithRightLeds();
+  right = prox.countsRightWithLeftLeds() + prox.countsRightWithRightLeds();
+}
+
+// -------------------- State starters --------------------
+void startEvade(int ringStatus) {
+  evadeDirection = ringStatus;
+  currentState = evadeRing;
+  currentEvadeState = EVADE_INIT;
+}
+
+void startAttackCycle() {
+  currentState = attack;
+  currentAttackState = ATTACK_INIT;
+}
+
+// -------------------- Evade cycle --------------------
+void runEvadeCycle() {
+  switch (currentEvadeState) {
+    case EVADE_INIT:
+      lcd.gotoXY(10, 0);
+      lcd.print("EV");
+      motors.setSpeeds(backSpeed, backSpeed);
+      stateTimer = millis();
+      currentEvadeState = EVADE_BACK;
+      break;
+
+    case EVADE_BACK:
+      if (millis() - stateTimer >= EVADE_BACK_MS) {
+        if (evadeDirection == -1) {
+          // line on left -> turn right
+          motors.setSpeeds(220, -220);
+        }
+        else if (evadeDirection == 1) {
+          // line on right -> turn left
+          motors.setSpeeds(-220, 220);
+        }
+        else {
+          // line center -> stronger turn
+          motors.setSpeeds(240, -240);
+        }
+
+        stateTimer = millis();
+        currentEvadeState = EVADE_TURN;
+      }
+      break;
+
+    case EVADE_TURN:
+      if (millis() - stateTimer >= EVADE_TURN_MS) {
+        motors.setSpeeds(200, 200);
+        stateTimer = millis();
+        currentEvadeState = EVADE_FORWARD;
+      }
+      break;
+
+    case EVADE_FORWARD:
+      if (millis() - stateTimer >= EVADE_FORWARD_MS) {
+        motors.setSpeeds(0, 0);
+        currentState = search;
+      }
+      break;
+  }
+}
+
+// -------------------- Attack cycle --------------------
+void runAttackCycle() {
+  // During attack, line safety still wins outside this function in loop()
+
+  switch (currentAttackState) {
+    case ATTACK_INIT:
+      lcd.gotoXY(10, 0);
+      lcd.print("AT");
+
+      // steer toward enemy before push
+      if (left > right && left >= SEARCH_THRESHOLD) {
+        motors.setSpeeds(120, 260);
+      }
+      else if (right > left && right >= SEARCH_THRESHOLD) {
+        motors.setSpeeds(260, 120);
+      }
+      else {
+        motors.setSpeeds(pushSpeed, pushSpeed);
+      }
+
+      stateTimer = millis();
+      currentAttackState = ATTACK_PUSH;
+      break;
+
+    case ATTACK_PUSH:
+      // keep correcting during push
+      if (front >= COMMIT_THRESHOLD || collisionDetected()) {
+        if (left > right) {
+          motors.setSpeeds(pushSpeed - 40, pushSpeed);
+        }
+        else if (right > left) {
+          motors.setSpeeds(pushSpeed, pushSpeed - 40);
+        }
+        else {
+          motors.setSpeeds(pushSpeed, pushSpeed);
+        }
+      }
+      else {
+        // enemy not committed in front anymore
+        currentState = search;
+        return;
+      }
+
+      if (millis() - stateTimer >= ATTACK_PUSH_MS) {
+        motors.setSpeeds(backSpeed, backSpeed);
+        stateTimer = millis();
+        currentAttackState = ATTACK_BACK;
+      }
+      break;
+
+    case ATTACK_BACK:
+      if (millis() - stateTimer >= ATTACK_BACK_MS) {
+        // change angle every attack cycle
+        if (ramAngleDir > 0) {
+          motors.setSpeeds(220, -180);
+        }
+        else {
+          motors.setSpeeds(-180, 220);
+        }
+
+        ramAngleDir = -ramAngleDir;
+        stateTimer = millis();
+        currentAttackState = ATTACK_TURN;
+      }
+      break;
+
+    case ATTACK_TURN:
+      if (millis() - stateTimer >= ATTACK_ANGLE_MS) {
+        currentAttackState = ATTACK_INIT;
+      }
+      break;
+  }
+}
+
+// -------------------- Setup --------------------
+void setup() {
+  Wire.begin();
+  imu.init();
+  imu.enableDefault();
+
+  lcd.init();
+  lcd.clear();
+
+  lineSensors.initThreeSensors();
+  prox.initThreeSensors();
+
+  buttonA.waitForPress();
+  delay(500);
+
+  autoCalibrateRing();
+
+  encoders.getCountsAndResetLeft();
+  encoders.getCountsAndResetRight();
+
+  pivotTimer = millis();
+  scanTimer = millis();
+}
+
+// -------------------- Main loop --------------------
+void loop() {
+  readAllSensors();
+  int ringStatus = checkRing(rawSensorValues);
+
+  lcd.gotoXY(0, 0);
+  lcd.print((int)currentState);
+  lcd.print(" F"); lcd.print(front);
+  lcd.print(" ");
+
+  lcd.gotoXY(0, 1);
+  lcd.print(left); lcd.print(" ");
+  lcd.print(front); lcd.print(" ");
+  lcd.print(right);
+
+  // ====================
+  // PRIORITY 1: RING SAFETY
+  // ====================
+  if (ringStatus != 99) {
+    ringConfirmCount++;
+    if (ringConfirmCount >= RING_CONFIRM_LIMIT) {
+      ringConfirmCount = 0;
+      startEvade(ringStatus);
+    }
+  } else {
+    ringConfirmCount = 0;
+  }
+
+  // If evading, do only evade until finished
+  if (currentState == evadeRing) {
+    runEvadeCycle();
+    return;
+  }
+
+  // ====================
+  // PRIORITY 2: ENEMY DETECTION / ATTACK
+  // ====================
+  if (front >= COMMIT_THRESHOLD) {
+    if (currentState != attack) {
+      startAttackCycle();
+    }
+  }
+  else if (left >= SEARCH_THRESHOLD && left > right) {
+    // immediately turn toward left target
+    motors.setSpeeds(-120, 220);
+    currentState = search;
+    return;
+  }
+  else if (right >= SEARCH_THRESHOLD && right > left) {
+    // immediately turn toward right target
+    motors.setSpeeds(220, -120);
+    currentState = search;
+    return;
+  }
+
+  // If already attacking, continue attack cycle
+  if (currentState == attack) {
+    runAttackCycle();
+    return;
+  }
+
+  // ====================
+  // PRIORITY 3: SEARCH
+  // ====================
+  if (front >= SEARCH_THRESHOLD) {
+    motors.setSpeeds(180, 180);
+    return;
+  }
+
+  {
+    unsigned long now = millis();
+
+    if (now - scanTimer > arcTime) {
+      scanDirection *= -1;
+      scanTimer = now;
+    }
+
+    if (now - pivotTimer > pivotInterval) {
+      motors.setSpeeds(160 * scanDirection, -160 * scanDirection);
+      if (now - pivotTimer > pivotInterval + pivotTime) {
+        pivotTimer = now;
+      }
+      return;
+    }
+
+    if (scanDirection == 1) {
+      motors.setSpeeds(200, 160);
+    } else {
+      motors.setSpeeds(160, 200);
+    }
+  }
+}

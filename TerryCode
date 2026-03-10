@@ -1,0 +1,183 @@
+#include <Wire.h>
+#include <Zumo32U4.h>
+
+// Initialize Zumo components
+Zumo32U4OLED display;
+Zumo32U4LineSensors lineSensors;
+Zumo32U4ProximitySensors proxSensors;
+Zumo32U4Motors motors;
+Zumo32U4ButtonA buttonA;
+Zumo32U4IMU imu;
+
+// Settings
+const uint16_t LINE_THRESHOLD = 1000;  // Adjust for your ring (lower = more sensitive)
+const int16_t  MAX_SPEED      = 400;
+const int16_t  SEARCH_SPEED   = 200;
+const uint16_t COLLISION_THRESHOLD = 5000; // Accel spike to detect a hit
+
+void setup() {
+  imu.init();
+  imu.enableDefault();
+  lineSensors.initThreeSensors();
+  proxSensors.initThreeSensors();
+
+  display.clear();
+  display.print(F("Press A"));
+  buttonA.waitForButton();
+ 
+  // Standard 5-second countdown
+  for (int i = 5; i > 0; i--) {
+    display.clear();
+    display.print(i);
+    delay(1000);
+  }
+  display.clear();
+  display.print(F("FIGHT!"));
+}
+
+void loop() {
+  static uint16_t lineValues[3];
+  lineSensors.read(lineValues);
+
+  // 1. BOUNDARY DETECTION (Highest Priority)
+  // If any sensor sees the white border (low reflection value)
+  if (lineValues[0] < LINE_THRESHOLD || lineValues[2] < LINE_THRESHOLD) {
+    motors.setSpeeds(-MAX_SPEED, -MAX_SPEED);
+    delay(200);
+    motors.setSpeeds(MAX_SPEED, -MAX_SPEED);
+    delay(300);
+    return;
+  }
+
+  // 2. COLLISION DETECTION (Accelerometer)
+  imu.readAcc();
+  // Check for sudden impact on X or Y axis
+  if (abs(imu.a.x) > COLLISION_THRESHOLD || abs(imu.a.y) > COLLISION_THRESHOLD) {
+    display.gotoXY(0, 1);
+    display.print(F("HIT!"));
+    // Spin rapidly to find the source of the impact
+    motors.setSpeeds(MAX_SPEED, -MAX_SPEED);
+    delay(150);
+    return;
+  }
+
+  // 3. TARGETING (Proximity Sensors)
+  proxSensors.read();
+  uint8_t leftProx   = proxSensors.countsLeftWithLeftLeds();
+  uint8_t rightProx  = proxSensors.countsRightWithRightLeds();
+  uint8_t frontLeft  = proxSensors.countsFrontWithLeftLeds();
+  uint8_t frontRight = proxSensors.countsFrontWithRightLeds();
+
+  if (frontLeft >= 4 || frontRight >= 4) {
+    // Enemy is straight ahead: Full charge!
+    motors.setSpeeds(MAX_SPEED, MAX_SPEED);
+  }
+  else if (leftProx > 2) {
+    // Enemy detected on the left: Pivot left
+    motors.setSpeeds(-SEARCH_SPEED, SEARCH_SPEED);
+  }
+  else if (rightProx > 2) {
+    // Enemy detected on the right: Pivot right
+    motors.setSpeeds(SEARCH_SPEED, -SEARCH_SPEED);
+  }
+  else {
+    // No target: Spin slowly to scan the ring
+    motors.setSpeeds(SEARCH_SPEED, -SEARCH_SPEED);
+  }
+}
+
+
+
+>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+#include <Wire.h>
+#include <Zumo32U4.h>
+
+Zumo32U4LCD display;
+Zumo32U4ButtonA buttonA;
+Zumo32U4Motors motors;
+Zumo32U4LineSensors lineSensors;
+Zumo32U4ProximitySensors proxSensors;
+Zumo32U4IMU imu;
+
+// Constants
+const uint16_t LINE_THRESHOLD = 1000; // Lower = more sensitive to white
+const int16_t MAX_SPEED = 400;
+const int16_t SEARCH_SPEED = 200;
+const int32_t COLLISION_THRESHOLD = 5000; // Adjust based on testing
+
+void setup() {
+  // Initialize sensors
+  lineSensors.initThreeSensors();
+  proxSensors.initThreeSensors();
+ 
+  Wire.begin();
+  imu.init();
+  imu.enableDefault();
+
+  display.clear();
+  display.print(F("Press A"));
+  buttonA.waitForButton();
+ 
+  // Standard 5-second Sumo delay
+  delay(5000);
+}
+
+void loop() {
+  // 1. READ SENSORS
+  uint16_t lineValues[3];
+  lineSensors.read(lineValues);
+ 
+  proxSensors.read();
+  uint8_t leftProx = proxSensors.countsLeftWithLeftLeds();
+  uint8_t rightProx = proxSensors.countsRightWithRightLeds();
+  uint8_t frontProx = proxSensors.countsFrontWithLeftLeds() + proxSensors.countsFrontWithRightLeds();
+
+  imu.readAcc();
+  int32_t xAcc = imu.a.x;
+  int32_t yAcc = imu.a.y;
+
+  // 2. LINE DETECTION (Priority 1)
+  if (lineValues[0] < LINE_THRESHOLD) { // Left sensor saw white
+    motors.setSpeeds(-MAX_SPEED, -MAX_SPEED);
+    delay(200);
+    motors.setSpeeds(MAX_SPEED, -MAX_SPEED);
+    delay(300);
+    return;
+  }
+  if (lineValues[2] < LINE_THRESHOLD) { // Right sensor saw white
+    motors.setSpeeds(-MAX_SPEED, -MAX_SPEED);
+    delay(200);
+    motors.setSpeeds(-MAX_SPEED, MAX_SPEED);
+    delay(300);
+    return;
+  }
+
+  // 3. COLLISION DETECTION (Priority 2)
+  // If we feel a hit (sudden acceleration spike)
+  if (abs(xAcc) > COLLISION_THRESHOLD || abs(yAcc) > COLLISION_THRESHOLD) {
+    display.clear();
+    display.print(F("HIT!"));
+    motors.setSpeeds(MAX_SPEED, MAX_SPEED); // Ram back or turn to face
+    delay(100);
+    return;
+  }
+
+  // 4. SEARCH AND ATTACK (Priority 3)
+  if (frontProx >= 4) {
+    // Opponent centered - Full charge
+    motors.setSpeeds(MAX_SPEED, MAX_SPEED);
+  }
+  else if (leftProx > 2) {
+    // Opponent to the left - Spin left
+    motors.setSpeeds(-SEARCH_SPEED, SEARCH_SPEED);
+  }
+  else if (rightProx > 2) {
+    // Opponent to the right - Spin right
+    motors.setSpeeds(SEARCH_SPEED, -SEARCH_SPEED);
+  }
+  else {
+    // No one found - Slow circle to scan
+    motors.setSpeeds(SEARCH_SPEED, -SEARCH_SPEED);
+  }
+}
